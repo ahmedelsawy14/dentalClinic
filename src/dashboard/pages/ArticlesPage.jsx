@@ -15,7 +15,7 @@ import {
   upsertArticle,
 } from "../utils/articleStorage";
 
-function ArticlesPage({ initialSpecialtySlug = "" }) {
+function ArticlesPage({ initialSpecialtySlug = "", mode = "" }) {
   const location = useLocation();
   const specialties = getSpecialties();
   const defaultSpecialtySlug = initialSpecialtySlug || specialties[0]?.slug || "";
