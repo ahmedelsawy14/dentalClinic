@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import Seo from "../Components/Seo";
 import ErrorBoundary from "../Components/ErrorBoundary";
@@ -6,12 +7,21 @@ import ServiceArticle from "../Components/ServiceArticle";
 import RelatedServices from "../Components/RelatedServices";
 import SpecialtyArticlesSection from "../Components/articles/SpecialtyArticlesSection";
 import { getRelatedServices, getServiceBySlug } from "../data/services";
-import { getServiceContentBySlug } from "../dashboard/utils/articleStorage";
+import { getServiceContentBySlug, subscribeToArticleStorage } from "../dashboard/utils/articleStorage";
 
 function ServiceDetail() {
   const { serviceName } = useParams();
   const service = getServiceBySlug(serviceName);
   const relatedServices = getRelatedServices(serviceName, 2);
+  
+  const [, setContentVersion] = useState(0);
+
+  useEffect(() => {
+    return subscribeToArticleStorage(() => {
+      setContentVersion((v) => v + 1);
+    });
+  }, []);
+
   const dynamicContent = getServiceContentBySlug(serviceName);
   const safeArticleContent = dynamicContent?.guide || service?.article;
 
