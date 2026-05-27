@@ -52,6 +52,8 @@ if (typeof window !== "undefined") {
       }
     });
     notifyListeners({ type: "guides-update" });
+  }, (error) => {
+    console.error("Firestore guides subscription failed (check rules):", error);
   });
 
   // Subscribe to Articles
@@ -87,6 +89,8 @@ if (typeof window !== "undefined") {
     });
 
     notifyListeners({ type: "articles-update" });
+  }, (error) => {
+    console.error("Firestore articles subscription failed (check rules):", error);
   });
 }
 
