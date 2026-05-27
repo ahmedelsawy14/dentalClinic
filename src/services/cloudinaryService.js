@@ -6,16 +6,24 @@ export async function uploadImage(file) {
 
   const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
 
-  const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
-    method: "POST",
-    body: formData,
-  });
+  console.log("Uploading to Cloudinary...", { cloudName, preset: import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET });
 
-  const data = await res.json();
+  try {
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+      method: "POST",
+      body: formData,
+    });
 
-  if (!res.ok || !data?.secure_url) {
-    throw new Error("تعذر رفع الصورة إلى Cloudinary حاليًا.");
+    const data = await res.json();
+    console.log("Cloudinary response:", data);
+
+    if (!res.ok || !data?.secure_url) {
+      throw new Error(data?.error?.message || "تعذر رفع الصورة إلى Cloudinary حاليًا.");
+    }
+
+    return data.secure_url;
+  } catch (error) {
+    console.error("Cloudinary upload error:", error);
+    throw new Error(error.message || "تعذر رفع الصورة إلى Cloudinary حاليًا.");
   }
-
-  return data.secure_url;
 }
