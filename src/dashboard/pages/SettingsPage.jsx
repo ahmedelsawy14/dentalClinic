@@ -1,16 +1,23 @@
 import { useEffect, useState } from "react";
-import { DENTAL_ARTICLES_KEY, getAllArticles, getSpecialties } from "../utils/articleStorage";
+import { DENTAL_ARTICLES_KEY, getAllArticles, getSpecialties, subscribeToArticleStorage } from "../utils/articleStorage";
 import { getCases } from "../../services/casesService";
 
 function SettingsPage() {
   const specialties = getSpecialties();
-  const articleCount = getAllArticles().length;
+  const [articleCount, setArticleCount] = useState(0);
   const [caseCount, setCaseCount] = useState(0);
 
   useEffect(() => {
     getCases()
       .then((cases) => setCaseCount(cases.length))
       .catch(() => setCaseCount(0));
+  }, []);
+
+  useEffect(() => {
+    setArticleCount(getAllArticles().length);
+    return subscribeToArticleStorage(() => {
+      setArticleCount(getAllArticles().length);
+    });
   }, []);
 
   const storageSize = (() => {

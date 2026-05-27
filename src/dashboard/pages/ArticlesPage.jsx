@@ -15,7 +15,7 @@ import {
   upsertArticle,
 } from "../utils/articleStorage";
 
-function ArticlesPage({ initialSpecialtySlug = "" }) {
+function ArticlesPage({ initialSpecialtySlug = "", mode = "" }) {
   const location = useLocation();
   const specialties = getSpecialties();
   const defaultSpecialtySlug = initialSpecialtySlug || specialties[0]?.slug || "";
@@ -79,11 +79,17 @@ function ArticlesPage({ initialSpecialtySlug = "" }) {
     setGuideSaving(true);
 
     try {
-      saveServiceGuide(selectedSpecialty, payload);
+      await saveServiceGuide(selectedSpecialty, payload);
       setToast({
         type: "success",
         title: "تم حفظ الدليل الرئيسي",
         message: `تم تحديث النصوص الأساسية لخدمة ${selectedSpecialtyMeta?.title || "التخصص"}.`,
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        title: "تعذر حفظ الدليل",
+        message: error?.message || "حدث خطأ أثناء الاتصال بـ Firebase.",
       });
     } finally {
       setGuideSaving(false);
@@ -94,30 +100,44 @@ function ArticlesPage({ initialSpecialtySlug = "" }) {
     setSavingArticleId(currentId || "new");
 
     try {
-      const savedArticle = upsertArticle(payload, currentId);
+      const savedArticle = await upsertArticle(payload, currentId);
       setIsCreatingArticle(false);
       setToast({
         type: "success",
         title: currentId ? "تم تحديث المقال" : "تمت إضافة المقال",
         message: `أصبح "${savedArticle?.title || "المقال"}" ظاهرًا أسفل صفحة الخدمة بنفس الترتيب الرأسي.`,
       });
+    } catch (error) {
+      setToast({
+        type: "error",
+        title: "تعذر حفظ المقال",
+        message: error?.message || "حدث خطأ أثناء الاتصال بـ Firebase.",
+      });
     } finally {
       setSavingArticleId("");
     }
   };
 
-  const handleDeleteArticle = () => {
+  const handleDeleteArticle = async () => {
     if (!pendingDeleteArticle) {
       return;
     }
 
-    deleteArticle(pendingDeleteArticle.id);
-    setPendingDeleteArticle(null);
-    setToast({
-      type: "success",
-      title: "تم حذف المقال",
-      message: "تمت إزالة المقال من التخصص المحدد.",
-    });
+    try {
+      await deleteArticle(pendingDeleteArticle.id);
+      setPendingDeleteArticle(null);
+      setToast({
+        type: "success",
+        title: "تم حذف المقال",
+        message: "تمت إزالة المقال من التخصص المحدد.",
+      });
+    } catch (error) {
+      setToast({
+        type: "error",
+        title: "تعذر حذف المقال",
+        message: error?.message || "حدث خطأ أثناء الاتصال بـ Firebase.",
+      });
+    }
   };
 
   return (

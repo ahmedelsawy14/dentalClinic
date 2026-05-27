@@ -28,6 +28,6 @@ dist-ssr
 /backend/uploads
 
 # Environment variables
-.env
+# .env
 .env.*
 !.env.example

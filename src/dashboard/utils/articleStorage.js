@@ -2,206 +2,100 @@ import { getAllServices, getServiceBySlug } from "../../data/services";
 import { buildSeedArticles, dashboardSpecialties, dashboardSpecialtyMap } from "./dashboardData";
 import { calculateReadingTime, extractExcerpt } from "./seoHelpers";
 import { canUseStorage, readStorageJSON, removeStorageValue, writeStorageJSON } from "../../utils/storage";
+import { collection, doc, setDoc, deleteDoc, onSnapshot } from "firebase/firestore";
+import { db } from "../../lib/firebase";
 
 export const DASHBOARD_STORAGE_EVENT = "hazem-dashboard-storage";
 export const DENTAL_ARTICLES_KEY = "dental_articles";
 export const DENTAL_ARTICLE_DRAFT_KEY = "dental_article_draft";
 export const DENTAL_GUIDE_DRAFT_KEY = "dental_service_guide_draft";
 
-function emitDashboardStorage(detail) {
-  if (!canUseStorage()) {
-    return;
-  }
+// Local in-memory cache populated reactively from Firestore
+const seedArticles = buildSeedArticles();
+const cache = { ...seedArticles };
+const listeners = new Set();
 
-  window.dispatchEvent(new CustomEvent(DASHBOARD_STORAGE_EVENT, { detail }));
-}
-
-function createGuideBlueprint(service) {
-  return {
-    intro: service.article?.intro || "",
-    sections: (service.article?.sections || []).map((section) => ({
-      title: section.title,
-      points: Array.isArray(section.points) ? [...section.points] : [],
-      paragraphs: Array.isArray(section.paragraphs) ? [...section.paragraphs] : [],
-    })),
-    continuation: (service.article?.continuation || []).map((section) => ({
-      title: section.title,
-      points: Array.isArray(section.points) ? [...section.points] : [],
-      paragraphs: Array.isArray(section.paragraphs) ? [...section.paragraphs] : [],
-    })),
-  };
-}
-
-function normalizeParagraphs(value, fallback = []) {
-  if (Array.isArray(value)) {
-    return value.map((item) => item?.toString().trim()).filter(Boolean);
-  }
-
-  if (typeof value === "string") {
-    return value
-      .split(/\n{2,}/)
-      .map((item) => item.trim())
-      .filter(Boolean);
-  }
-
-  return fallback;
-}
-
-function normalizeArticleRecord(article, specialtySlug) {
-  const content = article?.content?.toString().trim() || "";
-  const createdAt = article?.createdAt || new Date().toISOString();
-  const updatedAt = article?.updatedAt || createdAt;
-
-  return {
-    id: article?.id || crypto.randomUUID(),
-    specialty: specialtySlug,
-    title: article?.title?.toString().trim() || "",
-    content,
-    createdAt,
-    updatedAt,
-    published: article?.published ?? article?.status !== "draft",
-    excerpt: extractExcerpt(content, article?.title || ""),
-    readingTime: calculateReadingTime(content),
-  };
-}
-
-function createGuideContent(service, storedGuide = {}) {
-  const blueprint = createGuideBlueprint(service);
-
-  return {
-    intro: storedGuide?.intro?.toString().trim() || blueprint.intro,
-    sections: blueprint.sections.map((section, index) => ({
-      title: section.title,
-      points: section.points,
-      paragraphs: normalizeParagraphs(storedGuide?.sections?.[index]?.paragraphs, section.paragraphs),
-    })),
-    continuation: blueprint.continuation.map((section, index) => ({
-      title: section.title,
-      points: section.points,
-      paragraphs: normalizeParagraphs(
-        storedGuide?.continuation?.[index]?.paragraphs,
-        section.paragraphs,
-      ),
-    })),
-    updatedAt: storedGuide?.updatedAt || new Date().toISOString(),
-  };
-}
-
-function normalizeLegacyShape(parsed) {
-  const seed = buildSeedArticles();
-  const safeMap = {};
-
-  dashboardSpecialties.forEach((specialty) => {
-    const currentValue = parsed?.[specialty.slug];
-
-    if (Array.isArray(currentValue)) {
-      safeMap[specialty.slug] = {
-        guide: seed[specialty.slug].guide,
-        articles: currentValue.map((article) => normalizeArticleRecord(article, specialty.slug)),
-      };
-      return;
+function notifyListeners(detail) {
+  listeners.forEach((listener) => {
+    try {
+      listener();
+    } catch (e) {
+      console.error("Error in article storage listener:", e);
     }
+  });
+}
 
-    const service = getServiceBySlug(specialty.slug);
-    safeMap[specialty.slug] = {
-      guide: createGuideContent(service, currentValue?.guide),
-      articles: Array.isArray(currentValue?.articles)
-        ? currentValue.articles.map((article) => normalizeArticleRecord(article, specialty.slug))
-        : [],
-    };
+function emitDashboardStorage(detail) {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(DASHBOARD_STORAGE_EVENT, { detail }));
+  }
+  notifyListeners(detail);
+}
+
+// Set up Firestore listeners
+if (typeof window !== "undefined") {
+  const guidesRef = collection(db, "guides");
+  const articlesRef = collection(db, "articles");
+
+  // Subscribe to Guides
+  onSnapshot(guidesRef, (snapshot) => {
+    snapshot.docs.forEach((docSnap) => {
+      const slug = docSnap.id;
+      const data = docSnap.data();
+      if (cache[slug]) {
+        cache[slug].guide = {
+          intro: data.intro || "",
+          sections: data.sections || [],
+          continuation: data.continuation || [],
+          updatedAt: data.updatedAt || new Date().toISOString(),
+        };
+      }
+    });
+    notifyListeners({ type: "guides-update" });
+  }, (error) => {
+    console.error("Firestore guides subscription failed (check rules):", error);
   });
 
-  return safeMap;
-}
+  // Subscribe to Articles
+  onSnapshot(articlesRef, (snapshot) => {
+    // Reset articles in cache for all specialties before refilling
+    Object.keys(cache).forEach((slug) => {
+      cache[slug].articles = [];
+    });
 
-function parseStoredArticles() {
-  const seed = buildSeedArticles();
+    snapshot.docs.forEach((docSnap) => {
+      const data = docSnap.data();
+      const slug = data.specialty;
+      if (cache[slug]) {
+        cache[slug].articles.push({
+          id: docSnap.id,
+          specialty: slug,
+          title: data.title || "",
+          content: data.content || "",
+          createdAt: data.createdAt || new Date().toISOString(),
+          updatedAt: data.updatedAt || new Date().toISOString(),
+          published: data.published ?? true,
+          excerpt: data.excerpt || "",
+          readingTime: data.readingTime || 0,
+        });
+      }
+    });
 
-  if (!canUseStorage()) {
-    return seed;
-  }
+    // Sort articles by createdAt
+    Object.keys(cache).forEach((slug) => {
+      cache[slug].articles.sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
+    });
 
-  const parsed = readStorageJSON(DENTAL_ARTICLES_KEY, null, {
-    validate: (value) => !value || typeof value === "object",
+    notifyListeners({ type: "articles-update" });
+  }, (error) => {
+    console.error("Firestore articles subscription failed (check rules):", error);
   });
-
-  if (!parsed) {
-    writeStorageJSON(DENTAL_ARTICLES_KEY, seed);
-    return seed;
-  }
-
-  return normalizeLegacyShape(parsed);
-}
-
-function persistArticles(contentMap, detail) {
-  if (!canUseStorage()) {
-    return;
-  }
-
-  const result = writeStorageJSON(DENTAL_ARTICLES_KEY, contentMap);
-  if (!result.ok) {
-    throw new Error(
-      result.reason === "quota"
-        ? "مساحة التخزين المحلية امتلأت. حاول تقليل المحتوى أو حذف بعض البيانات قبل الحفظ."
-        : "تعذر حفظ محتوى الداشبورد محليًا في الوقت الحالي.",
-    );
-  }
-
-  emitDashboardStorage(detail);
-}
-
-function serializeContentMap(contentMap) {
-  return Object.fromEntries(
-    Object.entries(contentMap).map(([specialtySlug, value]) => [
-      specialtySlug,
-      {
-        guide: {
-          intro: value.guide.intro,
-          sections: value.guide.sections.map((section) => ({
-            paragraphs: [...section.paragraphs],
-          })),
-          continuation: value.guide.continuation.map((section) => ({
-            paragraphs: [...section.paragraphs],
-          })),
-          updatedAt: value.guide.updatedAt,
-        },
-        articles: value.articles.map((article) => ({
-          id: article.id,
-          title: article.title,
-          content: article.content,
-          createdAt: article.createdAt,
-          updatedAt: article.updatedAt,
-          published: article.published,
-        })),
-      },
-    ]),
-  );
 }
 
 function getContentSnapshot() {
-  const parsed = parseStoredArticles();
-
-  return Object.fromEntries(
-    getAllServices().map((service) => {
-      const stored = parsed[service.slug] || {};
-      const articles = Array.isArray(stored.articles)
-        ? stored.articles
-            .map((article) => normalizeArticleRecord(article, service.slug))
-            .sort(
-              (firstArticle, secondArticle) =>
-                new Date(firstArticle.createdAt).getTime() - new Date(secondArticle.createdAt).getTime(),
-            )
-        : [];
-
-      return [
-        service.slug,
-        {
-          guide: createGuideContent(service, stored.guide),
-          articles,
-        },
-      ];
-    }),
-  );
+  return cache;
 }
 
 export function getSpecialties() {
@@ -253,9 +147,9 @@ export function getEditableServiceContentBySlug(specialtySlug) {
   return getContentSnapshot()[specialtySlug] || null;
 }
 
-export function upsertArticle(article, currentId) {
-  const snapshot = getContentSnapshot();
+export async function upsertArticle(article, currentId) {
   const specialtySlug = article.specialty;
+  const snapshot = getContentSnapshot();
   const scopedContent = snapshot[specialtySlug];
 
   if (!scopedContent) {
@@ -265,72 +159,68 @@ export function upsertArticle(article, currentId) {
   const now = new Date().toISOString();
   const articleId = currentId || crypto.randomUUID();
   const existingArticle = scopedContent.articles.find((item) => item.id === articleId);
-  const nextArticle = normalizeArticleRecord(
-    {
-      ...article,
-      id: articleId,
-      createdAt: existingArticle?.createdAt || article.createdAt || now,
-      updatedAt: now,
-      published: article.published ?? existingArticle?.published ?? true,
-    },
-    specialtySlug,
-  );
 
-  const nextArticles = scopedContent.articles.filter((item) => item.id !== articleId);
-  nextArticles.push(nextArticle);
-  nextArticles.sort(
-    (firstArticle, secondArticle) =>
-      new Date(firstArticle.createdAt).getTime() - new Date(secondArticle.createdAt).getTime(),
-  );
+  const content = article.content?.toString().trim() || "";
+  const title = article.title?.toString().trim() || "";
 
-  snapshot[specialtySlug] = {
-    ...scopedContent,
-    articles: nextArticles,
+  const nextArticle = {
+    specialty: specialtySlug,
+    title,
+    content,
+    createdAt: existingArticle?.createdAt || article.createdAt || now,
+    updatedAt: now,
+    published: article.published ?? existingArticle?.published ?? true,
+    excerpt: extractExcerpt(content, title),
+    readingTime: calculateReadingTime(content),
   };
 
-  persistArticles(serializeContentMap(snapshot), { type: "article-upsert", articleId, specialtySlug });
-  return nextArticle;
+  const docRef = doc(db, "articles", articleId);
+  await setDoc(docRef, nextArticle);
+
+  emitDashboardStorage({ type: "article-upsert", articleId, specialtySlug });
+
+  return {
+    id: articleId,
+    ...nextArticle,
+  };
 }
 
-export function deleteArticle(articleId) {
-  const snapshot = getContentSnapshot();
+export async function deleteArticle(articleId) {
+  const docRef = doc(db, "articles", articleId);
+  await deleteDoc(docRef);
 
-  Object.keys(snapshot).forEach((specialtySlug) => {
-    snapshot[specialtySlug] = {
-      ...snapshot[specialtySlug],
-      articles: snapshot[specialtySlug].articles.filter((item) => item.id !== articleId),
-    };
-  });
-
-  persistArticles(serializeContentMap(snapshot), { type: "article-delete", articleId });
-  return snapshot;
+  emitDashboardStorage({ type: "article-delete", articleId });
 }
 
-export function saveServiceGuide(specialtySlug, guidePayload) {
-  const snapshot = getContentSnapshot();
+export async function saveServiceGuide(specialtySlug, guidePayload) {
   const service = getServiceBySlug(specialtySlug);
+  const snapshot = getContentSnapshot();
   const scopedContent = snapshot[specialtySlug];
 
   if (!service || !scopedContent) {
     return null;
   }
 
-  snapshot[specialtySlug] = {
-    ...scopedContent,
-    guide: createGuideContent(service, {
-      ...guidePayload,
-      updatedAt: new Date().toISOString(),
-    }),
+  const docRef = doc(db, "guides", specialtySlug);
+  const guideData = {
+    intro: guidePayload.intro?.toString().trim() || "",
+    sections: (guidePayload.sections || []).map((section) => ({
+      paragraphs: Array.isArray(section.paragraphs) ? [...section.paragraphs] : [],
+    })),
+    continuation: (guidePayload.continuation || []).map((section) => ({
+      paragraphs: Array.isArray(section.paragraphs) ? [...section.paragraphs] : [],
+    })),
+    updatedAt: new Date().toISOString(),
   };
 
-  persistArticles(serializeContentMap(snapshot), { type: "guide-save", specialtySlug });
-  return snapshot[specialtySlug].guide;
+  await setDoc(docRef, guideData);
+  emitDashboardStorage({ type: "guide-save", specialtySlug });
+
+  return guideData;
 }
 
 export function resetArticlesToSeed() {
-  const seedArticles = buildSeedArticles();
-  persistArticles(seedArticles, { type: "article-reset" });
-  return seedArticles;
+  return buildSeedArticles();
 }
 
 export function getArticleById(articleId) {
@@ -407,14 +297,17 @@ export function clearGuideDraft() {
 }
 
 export function subscribeToArticleStorage(listener) {
+  listeners.add(listener);
+
   if (!canUseStorage()) {
-    return () => {};
+    return () => {
+      listeners.delete(listener);
+    };
   }
 
   const handleStorage = (event) => {
     if (
       !event.key ||
-      event.key === DENTAL_ARTICLES_KEY ||
       event.key === DENTAL_ARTICLE_DRAFT_KEY ||
       event.key === DENTAL_GUIDE_DRAFT_KEY
     ) {
@@ -428,6 +321,7 @@ export function subscribeToArticleStorage(listener) {
   window.addEventListener(DASHBOARD_STORAGE_EVENT, handleDashboardEvent);
 
   return () => {
+    listeners.delete(listener);
     window.removeEventListener("storage", handleStorage);
     window.removeEventListener(DASHBOARD_STORAGE_EVENT, handleDashboardEvent);
   };
